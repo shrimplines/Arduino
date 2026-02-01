@@ -1,1 +1,265 @@
+// setup the setup
+int scroll1 = 8;
+int scroll2 = 9;
+int scroll3 = 10;
+int scroll4 = 11;
 
+int flip1 = 4;
+int flip2 = 5;
+int flip3 = 6;
+int flip4 = 7;
+
+int footright = 2; // next page
+int footleft = 3;  // prev page
+
+// var
+int stepcount = 0;
+int flipperwhere = 0; // where the flipper thinks it is
+int ready = 0; // 0=not calibrated, 1=ready
+int state = 0; // 0=waiting, 1=calibrating, 2=go time
+
+unsigned long laststep = 0;
+unsigned long lastbuttoncheck = 0;
+
+int rightnow = 1;
+int leftnow = 1;
+int rightbefore = 1;
+int leftbefore = 1;
+
+// motor go spinny
+int motorpattern[8][4] = {
+  {1,0,0,0},
+  {1,1,0,0},
+  {0,1,0,0},
+  {0,1,1,0},
+  {0,0,1,0},
+  {0,0,1,1},
+  {0,0,0,1},
+  {1,0,0,1}
+};
+
+void setup() {
+  Serial.begin(9600);
+  
+  // set up motor pins, start off
+  pinMode(scroll1, OUTPUT); digitalWrite(scroll1, LOW);
+  pinMode(scroll2, OUTPUT); digitalWrite(scroll2, LOW);
+  pinMode(scroll3, OUTPUT); digitalWrite(scroll3, LOW);
+  pinMode(scroll4, OUTPUT); digitalWrite(scroll4, LOW);
+  
+  pinMode(flip1, OUTPUT); digitalWrite(flip1, LOW);
+  pinMode(flip2, OUTPUT); digitalWrite(flip2, LOW);
+  pinMode(flip3, OUTPUT); digitalWrite(flip3, LOW);
+  pinMode(flip4, OUTPUT); digitalWrite(flip4, LOW);
+  
+  // foot buttons
+  pinMode(footright, INPUT_PULLUP);
+  pinMode(footleft, INPUT_PULLUP);
+  
+  Serial.println("on. calibrating time"); // hold down both feet
+}
+
+void loop() {
+  unsigned long now = millis();
+  
+  // check buttons but like nicely
+  int rightread = digitalRead(footright);
+  int leftread = digitalRead(footleft);
+  
+  if (rightread != rightbefore) lastbuttoncheck = now;
+  if (leftread != leftbefore) lastbuttoncheck = now;
+  
+  if ((now - lastbuttoncheck) > 50) {
+    rightnow = rightread;
+    leftnow = leftread;
+  }
+  
+  rightbefore = rightread;
+  leftbefore = leftread;
+  
+  // 0: wait for calibration
+  if (state == 0) {
+    // if both feet are down
+    if (rightnow == 0 && leftnow == 0) {
+      unsigned long starttime = now;
+      while ((millis() - starttime) < 2000) {
+        if (digitalRead(footright) == 1 || digitalRead(footleft) == 1) {
+          break;
+        }
+        delay(10);
+      }
+      
+      if ((millis() - starttime) >= 2000) {
+        Serial.println("calibrating, press for next page zero");
+        state = 1;
+        ready = 0;
+        flipperwhere = 0;
+        delay(500);
+      }
+    }
+  }
+  
+  // 1: actual calibrating time
+  else if (state == 1) {
+    // flipper goes brrr slowly
+    if (now - laststep > 15) {
+      stepmotor(flip1, flip2, flip3, flip4, -1);
+      flipperwhere--;
+      laststep = now;
+    }
+    
+    // press. this is zero
+    if ((rightnow == 0 || leftnow == 0) && !(rightnow == 0 && leftnow == 0)) {
+      Serial.println("zero set");
+      ready = 1;
+      state = 2;
+      flipperwhere = 0;
+      
+      alloff();
+      delay(500);
+      Serial.println("ready to SLAYY");
+    }
+    
+    // safety so it doesn't go forever
+    if (flipperwhere < -3000) {
+      Serial.println("calibration failed");
+      state = 0;
+      alloff();
+    }
+  }
+  
+  // 2: normal
+  else if (state == 2 && ready == 1) {
+    // right foot = next page
+    if (rightnow == 0 && leftnow == 1) {
+      Serial.println("next page");
+      nextpage();
+      delay(300);
+    }
+    
+    // left = prev
+    else if (leftnow == 0 && rightnow == 1) {
+      Serial.println("prev page");
+      prevpage();
+      delay(300);
+    }
+    
+    // both = recalibrate again
+    if (rightnow == 0 && leftnow == 0) {
+      unsigned long starttime = now;
+      while ((millis() - starttime) < 2000) {
+        if (digitalRead(footright) == 1 || digitalRead(footleft) == 1) {
+          break;
+        }
+        delay(10);
+      }
+      
+      if ((millis() - starttime) >= 2000) {
+        Serial.println("recalibrating ok");
+        state = 1;
+        ready = 0;
+        flipperwhere = 0;
+        delay(500);
+      }
+    }
+  }
+  
+  delay(2);
+}
+
+// next page
+void nextpage() {
+  // scroll wheel moves pages up
+  for (int i = 0; i < 450; i++) {
+    stepmotor(scroll1, scroll2, scroll3, scroll4, 1);
+    delay(2);
+  }
+  delay(150);
+  
+  // flippy
+  for (int i = 0; i < 1024; i++) {
+    stepmotor(flip1, flip2, flip3, flip4, 1);
+    flipperwhere++;
+    delay(2);
+  }
+  delay(300);
+  
+  // back home
+  while (flipperwhere > 0) {
+    stepmotor(flip1, flip2, flip3, flip4, -1);
+    flipperwhere--;
+    delay(2);
+  }
+  
+  // adjustment
+  for (int i = 0; i < 100; i++) {
+    stepmotor(scroll1, scroll2, scroll3, scroll4, -1);
+    delay(2);
+  }
+  
+  alloff();
+}
+
+// prev page
+void prevpage() {
+  // flipper flips first
+  for (int i = 0; i < 1024; i++) {
+    stepmotor(flip1, flip2, flip3, flip4, 1);
+    flipperwhere++;
+    delay(2);
+  }
+  delay(150);
+  
+  // move pages back
+  for (int i = 0; i < 450; i++) {
+    stepmotor(scroll1, scroll2, scroll3, scroll4, -1);
+    delay(2);
+  }
+  delay(300);
+  
+  // flip comes back
+  while (flipperwhere > 0) {
+    stepmotor(flip1, flip2, flip3, flip4, -1);
+    flipperwhere--;
+    delay(2);
+  }
+  
+  // adjustment
+  for (int i = 0; i < 100; i++) {
+    stepmotor(scroll1, scroll2, scroll3, scroll4, 1);
+    delay(2);
+  }
+  
+  alloff();
+}
+
+// motor go steppy
+void stepmotor(int p1, int p2, int p3, int p4, int dir) {
+  if (dir > 0) {
+    stepcount++;
+    if (stepcount > 7) stepcount = 0;
+  } else {
+    stepcount--;
+    if (stepcount < 0) stepcount = 7;
+  }
+  
+  digitalWrite(p1, motorpattern[stepcount][0]);
+  digitalWrite(p2, motorpattern[stepcount][1]);
+  digitalWrite(p3, motorpattern[stepcount][2]);
+  digitalWrite(p4, motorpattern[stepcount][3]);
+  
+  delayMicroseconds(1000);
+}
+
+// quiet
+void alloff() {
+  digitalWrite(scroll1, LOW);
+  digitalWrite(scroll2, LOW);
+  digitalWrite(scroll3, LOW);
+  digitalWrite(scroll4, LOW);
+  
+  digitalWrite(flip1, LOW);
+  digitalWrite(flip2, LOW);
+  digitalWrite(flip3, LOW);
+  digitalWrite(flip4, LOW);
+}
