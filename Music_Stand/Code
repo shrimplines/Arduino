@@ -1,265 +1,405 @@
-// setup the setup
-int scroll1 = 8;
-int scroll2 = 9;
-int scroll3 = 10;
-int scroll4 = 11;
+// ============================================
+// 2-stepper page flipper - debug tracing
+// ============================================
 
-int flip1 = 4;
-int flip2 = 5;
-int flip3 = 6;
-int flip4 = 7;
+#include <Stepper.h>
 
-int footright = 2; // next page
-int footleft = 3;  // prev page
+// ========== pins and stuff ==========
+// flipper motor (pins 8,9,10,11)
+#define FLIPPER_IN1 8
+#define FLIPPER_IN2 9
+#define FLIPPER_IN3 10
+#define FLIPPER_IN4 11
 
-// var
-int stepcount = 0;
-int flipperwhere = 0; // where the flipper thinks it is
-int ready = 0; // 0=not calibrated, 1=ready
-int state = 0; // 0=waiting, 1=calibrating, 2=go time
+// spinner motor (pins 4,5,6,7)
+#define SPINNER_IN1 4
+#define SPINNER_IN2 5
+#define SPINNER_IN3 6
+#define SPINNER_IN4 7
 
-unsigned long laststep = 0;
-unsigned long lastbuttoncheck = 0;
+// buttons (high = pressed)
+#define LEFT_BUTTON 13
+#define RIGHT_BUTTON 12
 
-int rightnow = 1;
-int leftnow = 1;
-int rightbefore = 1;
-int leftbefore = 1;
+// led indicators
+#define LED_CAL 3
+#define LED_LEFT A2
+#define LED_RIGHT A3
 
-// motor go spinny
-int motorpattern[8][4] = {
-  {1,0,0,0},
-  {1,1,0,0},
-  {0,1,0,0},
-  {0,1,1,0},
-  {0,0,1,0},
-  {0,0,1,1},
-  {0,0,0,1},
-  {1,0,0,1}
+// ========== motor constants ==========
+#define STEPS_PER_REV 2048
+#define HALF_REV 1024
+
+// speed settings
+#define SPINNER_SPEED 15
+#define FLIPPER_SLOW 8
+#define FLIPPER_FAST 12
+
+Stepper flipper(STEPS_PER_REV, FLIPPER_IN1, FLIPPER_IN3, FLIPPER_IN2, FLIPPER_IN4);
+Stepper spinner(STEPS_PER_REV, SPINNER_IN1, SPINNER_IN3, SPINNER_IN2, SPINNER_IN4);
+
+// ========== the brain (state machine) ==========
+enum SystemState {
+  STATE_IDLE,
+  STATE_CALIBRATION,
+  STATE_POST_CALIBRATION_COOLDOWN,
+  STATE_LEFT_SEQ,
+  STATE_RIGHT_SEQ
 };
 
+SystemState currentState = STATE_IDLE;
+bool isCalibrated = false;
+unsigned long calibrationCompleteTime = 0;
+
+// ========== button debouncing logic ==========
+struct Button {
+  int pin;
+  bool lastState;
+  bool currentState;
+  bool pressed;
+  bool justPressed;
+  bool justReleased;
+  unsigned long pressStartTime;
+  bool holdTriggered;
+  unsigned long lastDebounceTime;
+};
+
+Button leftBtn = {LEFT_BUTTON, LOW, LOW, false, false, false, 0, false, 0};
+Button rightBtn = {RIGHT_BUTTON, LOW, LOW, false, false, false, 0, false, 0};
+#define DEBOUNCE_DELAY 50
+#define HOLD_TIME 500
+#define CALIBRATION_HOLD_TIME 1000
+#define POST_CALIBRATION_COOLDOWN 1500
+
+// ========== setup (getting ready) ==========
 void setup() {
   Serial.begin(9600);
+  Serial.println(F("=== Page Flipper Debug ==="));
+  Serial.println(F("Hold both 1s: Calibrate"));
+  Serial.println(F("Then hold left/right 0.5s: Flip"));
   
-  // set up motor pins, start off
-  pinMode(scroll1, OUTPUT); digitalWrite(scroll1, LOW);
-  pinMode(scroll2, OUTPUT); digitalWrite(scroll2, LOW);
-  pinMode(scroll3, OUTPUT); digitalWrite(scroll3, LOW);
-  pinMode(scroll4, OUTPUT); digitalWrite(scroll4, LOW);
+  flipper.setSpeed(FLIPPER_SLOW);
+  spinner.setSpeed(SPINNER_SPEED);
   
-  pinMode(flip1, OUTPUT); digitalWrite(flip1, LOW);
-  pinMode(flip2, OUTPUT); digitalWrite(flip2, LOW);
-  pinMode(flip3, OUTPUT); digitalWrite(flip3, LOW);
-  pinMode(flip4, OUTPUT); digitalWrite(flip4, LOW);
+  pinMode(leftBtn.pin, INPUT_PULLUP);
+  pinMode(rightBtn.pin, INPUT_PULLUP);
   
-  // foot buttons
-  pinMode(footright, INPUT_PULLUP);
-  pinMode(footleft, INPUT_PULLUP);
+  pinMode(LED_CAL, OUTPUT);
+  pinMode(LED_LEFT, OUTPUT);
+  pinMode(LED_RIGHT, OUTPUT);
   
-  Serial.println("on. calibrating time"); // hold down both feet
+  leftBtn.lastState = digitalRead(leftBtn.pin);
+  rightBtn.lastState = digitalRead(rightBtn.pin);
 }
 
+// ========== main loop (checking stuff constantly) ==========
 void loop() {
+  updateButton(&leftBtn);
+  updateButton(&rightBtn);
+  
+  switch(currentState) {
+    case STATE_IDLE:
+      idleState();
+      break;
+    case STATE_CALIBRATION:
+      calibrationState();
+      break;
+    case STATE_POST_CALIBRATION_COOLDOWN:
+      postCalibrationCooldown();
+      break;
+    case STATE_LEFT_SEQ:
+      leftSequence();
+      break;
+    case STATE_RIGHT_SEQ:
+      rightSequence();
+      break;
+  }
+  
+  // light up leds when pressed
+  digitalWrite(LED_LEFT, leftBtn.pressed ? HIGH : LOW);
+  digitalWrite(LED_RIGHT, rightBtn.pressed ? HIGH : LOW);
+  
+  // clear the "just" flags so they dont stick
+  leftBtn.justPressed = false;
+  leftBtn.justReleased = false;
+  rightBtn.justPressed = false;
+  rightBtn.justReleased = false;
+  
+  delay(5);
+}
+
+// ========== button debounce (handling click jitter) ==========
+void updateButton(Button *btn) {
+  bool reading = digitalRead(btn->pin);
   unsigned long now = millis();
   
-  // check buttons but like nicely
-  int rightread = digitalRead(footright);
-  int leftread = digitalRead(footleft);
-  
-  if (rightread != rightbefore) lastbuttoncheck = now;
-  if (leftread != leftbefore) lastbuttoncheck = now;
-  
-  if ((now - lastbuttoncheck) > 50) {
-    rightnow = rightread;
-    leftnow = leftread;
+  if (reading != btn->lastState) {
+    btn->lastDebounceTime = now;
   }
   
-  rightbefore = rightread;
-  leftbefore = leftread;
-  
-  // 0: wait for calibration
-  if (state == 0) {
-    // if both feet are down
-    if (rightnow == 0 && leftnow == 0) {
-      unsigned long starttime = now;
-      while ((millis() - starttime) < 2000) {
-        if (digitalRead(footright) == 1 || digitalRead(footleft) == 1) {
-          break;
-        }
-        delay(10);
-      }
+  if ((now - btn->lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (reading != btn->currentState) {
+      btn->currentState = reading;
       
-      if ((millis() - starttime) >= 2000) {
-        Serial.println("calibrating, press for next page zero");
-        state = 1;
-        ready = 0;
-        flipperwhere = 0;
-        delay(500);
+      if (reading == HIGH) {
+        btn->justPressed = true;
+        btn->pressed = true;
+        btn->pressStartTime = now;
+        btn->holdTriggered = false;
+        Serial.print(F("Btn"));
+        Serial.print(btn->pin);
+        Serial.println(F(" DOWN"));
+      } else {
+        btn->justReleased = true;
+        btn->pressed = false;
+        Serial.print(F("Btn"));
+        Serial.print(btn->pin);
+        Serial.println(F(" UP"));
       }
     }
   }
   
-  // 1: actual calibrating time
-  else if (state == 1) {
-    // flipper goes brrr slowly
-    if (now - laststep > 15) {
-      stepmotor(flip1, flip2, flip3, flip4, -1);
-      flipperwhere--;
-      laststep = now;
-    }
-    
-    // press. this is zero
-    if ((rightnow == 0 || leftnow == 0) && !(rightnow == 0 && leftnow == 0)) {
-      Serial.println("zero set");
-      ready = 1;
-      state = 2;
-      flipperwhere = 0;
-      
-      alloff();
-      delay(500);
-      Serial.println("ready to SLAYY");
-    }
-    
-    // safety so it doesn't go forever
-    if (flipperwhere < -3000) {
-      Serial.println("calibration failed");
-      state = 0;
-      alloff();
-    }
-  }
-  
-  // 2: normal
-  else if (state == 2 && ready == 1) {
-    // right foot = next page
-    if (rightnow == 0 && leftnow == 1) {
-      Serial.println("next page");
-      nextpage();
-      delay(300);
-    }
-    
-    // left = prev
-    else if (leftnow == 0 && rightnow == 1) {
-      Serial.println("prev page");
-      prevpage();
-      delay(300);
-    }
-    
-    // both = recalibrate again
-    if (rightnow == 0 && leftnow == 0) {
-      unsigned long starttime = now;
-      while ((millis() - starttime) < 2000) {
-        if (digitalRead(footright) == 1 || digitalRead(footleft) == 1) {
-          break;
-        }
-        delay(10);
-      }
-      
-      if ((millis() - starttime) >= 2000) {
-        Serial.println("recalibrating ok");
-        state = 1;
-        ready = 0;
-        flipperwhere = 0;
-        delay(500);
-      }
-    }
-  }
-  
-  delay(2);
+  btn->lastState = reading;
 }
 
-// next page
-void nextpage() {
-  // scroll wheel moves pages up
-  for (int i = 0; i < 450; i++) {
-    stepmotor(scroll1, scroll2, scroll3, scroll4, 1);
-    delay(2);
-  }
-  delay(150);
+// ========== idle state (just chilling) ==========
+void idleState() {
+  digitalWrite(LED_CAL, LOW);
   
-  // flippy
-  for (int i = 0; i < 1024; i++) {
-    stepmotor(flip1, flip2, flip3, flip4, 1);
-    flipperwhere++;
-    delay(2);
-  }
-  delay(300);
+  unsigned long now = millis();
   
-  // back home
-  while (flipperwhere > 0) {
-    stepmotor(flip1, flip2, flip3, flip4, -1);
-    flipperwhere--;
-    delay(2);
+  // occasionally shout out the status
+  static unsigned long lastStatus = 0;
+  if (now - lastStatus > 3000) {
+    lastStatus = now;
+    Serial.print(F("Status: Cal="));
+    Serial.print(isCalibrated);
+    Serial.print(F(" L="));
+    Serial.print(leftBtn.pressed);
+    Serial.print(F(" R="));
+    Serial.print(rightBtn.pressed);
+    Serial.print(F(" State="));
+    Serial.println(currentState);
   }
   
-  // adjustment
-  for (int i = 0; i < 100; i++) {
-    stepmotor(scroll1, scroll2, scroll3, scroll4, -1);
-    delay(2);
+  // check for calibration first (hold both buttons)
+  if (leftBtn.pressed && rightBtn.pressed) {
+    unsigned long holdDuration = now - min(leftBtn.pressStartTime, rightBtn.pressStartTime);
+    int progress = map(holdDuration, 0, CALIBRATION_HOLD_TIME, 0, 255);
+    analogWrite(LED_CAL, constrain(progress, 0, 255));
+    
+    if (holdDuration >= CALIBRATION_HOLD_TIME) {
+      Serial.println(F(">>> CAL <<<"));
+      analogWrite(LED_CAL, 0);
+      currentState = STATE_CALIBRATION;
+    }
+    return;
   }
   
-  alloff();
+  // check for flip triggers only if it's calibrated
+  if (isCalibrated) {
+    // left button hold logic
+    if (leftBtn.pressed && !rightBtn.pressed) {
+      unsigned long holdDuration = now - leftBtn.pressStartTime;
+      int progress = map(holdDuration, 0, HOLD_TIME, 0, 255);
+      analogWrite(LED_LEFT, constrain(progress, 0, 255));
+      
+      if (holdDuration >= HOLD_TIME && !leftBtn.holdTriggered) {
+        Serial.println(F(">>> LEFT <<<"));
+        leftBtn.holdTriggered = true;
+        analogWrite(LED_LEFT, 0);
+        currentState = STATE_LEFT_SEQ;
+      }
+    } else {
+      analogWrite(LED_LEFT, leftBtn.pressed ? 255 : 0);
+    }
+    
+    // right button hold logic
+    if (rightBtn.pressed && !leftBtn.pressed) {
+      unsigned long holdDuration = now - rightBtn.pressStartTime;
+      int progress = map(holdDuration, 0, HOLD_TIME, 0, 255);
+      analogWrite(LED_RIGHT, constrain(progress, 0, 255));
+      
+      if (holdDuration >= HOLD_TIME && !rightBtn.holdTriggered) {
+        Serial.println(F(">>> RIGHT <<<"));
+        rightBtn.holdTriggered = true;
+        analogWrite(LED_RIGHT, 0);
+        currentState = STATE_RIGHT_SEQ;
+      }
+    } else {
+      analogWrite(LED_RIGHT, rightBtn.pressed ? 255 : 0);
+    }
+  }
 }
 
-// prev page
-void prevpage() {
-  // flipper flips first
-  for (int i = 0; i < 1024; i++) {
-    stepmotor(flip1, flip2, flip3, flip4, 1);
-    flipperwhere++;
-    delay(2);
-  }
-  delay(150);
+// ========== post-calibration cooldown (taking a breath) ==========
+void postCalibrationCooldown() {
+  unsigned long now = millis();
   
-  // move pages back
-  for (int i = 0; i < 450; i++) {
-    stepmotor(scroll1, scroll2, scroll3, scroll4, -1);
-    delay(2);
-  }
-  delay(300);
-  
-  // flip comes back
-  while (flipperwhere > 0) {
-    stepmotor(flip1, flip2, flip3, flip4, -1);
-    flipperwhere--;
-    delay(2);
-  }
-  
-  // adjustment
-  for (int i = 0; i < 100; i++) {
-    stepmotor(scroll1, scroll2, scroll3, scroll4, 1);
-    delay(2);
-  }
-  
-  alloff();
-}
-
-// motor go steppy
-void stepmotor(int p1, int p2, int p3, int p4, int dir) {
-  if (dir > 0) {
-    stepcount++;
-    if (stepcount > 7) stepcount = 0;
+  // blink led to show we are in cooldown
+  if ((now / 500) % 2 == 0) {
+    digitalWrite(LED_CAL, HIGH);
   } else {
-    stepcount--;
-    if (stepcount < 0) stepcount = 7;
+    digitalWrite(LED_CAL, LOW);
   }
   
-  digitalWrite(p1, motorpattern[stepcount][0]);
-  digitalWrite(p2, motorpattern[stepcount][1]);
-  digitalWrite(p3, motorpattern[stepcount][2]);
-  digitalWrite(p4, motorpattern[stepcount][3]);
+  // still let it recalibrate if needed
+  if (leftBtn.pressed && rightBtn.pressed) {
+    unsigned long holdDuration = now - min(leftBtn.pressStartTime, rightBtn.pressStartTime);
+    if (holdDuration >= CALIBRATION_HOLD_TIME) {
+      Serial.println(F(">>> RECAL <<<"));
+      currentState = STATE_CALIBRATION;
+      return;
+    }
+  }
   
-  delayMicroseconds(1000);
+  // check if cooldown is over
+  if (now - calibrationCompleteTime >= POST_CALIBRATION_COOLDOWN) {
+    Serial.println(F(">>> READY <<<"));
+    digitalWrite(LED_CAL, LOW);
+    
+    leftBtn.pressStartTime = 0;
+    rightBtn.pressStartTime = 0;
+    leftBtn.holdTriggered = false;
+    rightBtn.holdTriggered = false;
+    
+    currentState = STATE_IDLE;
+  }
 }
 
-// quiet
-void alloff() {
-  digitalWrite(scroll1, LOW);
-  digitalWrite(scroll2, LOW);
-  digitalWrite(scroll3, LOW);
-  digitalWrite(scroll4, LOW);
+// ========== calibration (finding the start) ==========
+void calibrationState() {
+  static int stepsTaken = 0;
   
-  digitalWrite(flip1, LOW);
-  digitalWrite(flip2, LOW);
-  digitalWrite(flip3, LOW);
-  digitalWrite(flip4, LOW);
+  digitalWrite(LED_CAL, HIGH);
+  flipper.setSpeed(FLIPPER_SLOW);
+  
+  if (stepsTaken == 0) {
+    Serial.println(F("Cal move..."));
+    stepsTaken = 0;
+  }
+  
+  while (stepsTaken < STEPS_PER_REV * 2) {
+    updateButton(&leftBtn);
+    updateButton(&rightBtn);
+    
+    // tap a button to set the zero point
+    if (leftBtn.justPressed || rightBtn.justPressed) {
+      Serial.println(F(">>> ZERO <<<"));
+      flipper.step(0);
+      isCalibrated = true;
+      calibrationCompleteTime = millis();
+      stepsTaken = 0;
+      
+      leftBtn.holdTriggered = false;
+      rightBtn.holdTriggered = false;
+      leftBtn.pressStartTime = 0;
+      rightBtn.pressStartTime = 0;
+      leftBtn.justPressed = false;
+      rightBtn.justPressed = false;
+      
+      currentState = STATE_POST_CALIBRATION_COOLDOWN;
+      return;
+    }
+    
+    flipper.step(1);
+    stepsTaken++;
+    delay(2);
+    
+    // flash cal led while moving
+    if (stepsTaken % 200 == 0) {
+      digitalWrite(LED_CAL, !digitalRead(LED_CAL));
+    }
+  }
+  
+  Serial.println(F(">>> TIMEOUT <<<"));
+  stepsTaken = 0;
+  digitalWrite(LED_CAL, LOW);
+  currentState = STATE_IDLE;
+}
+
+// ========== left sequence (flipping it) ==========
+void leftSequence() {
+  Serial.println(F("L: Spin CW + Slow out, Fast back"));
+  
+  analogWrite(LED_LEFT, 0);
+  analogWrite(LED_RIGHT, 0);
+  
+  digitalWrite(LED_CAL, HIGH);
+  spinner.setSpeed(SPINNER_SPEED);
+  spinner.step(STEPS_PER_REV);
+  
+  flipper.setSpeed(FLIPPER_SLOW);
+  flipper.step(-HALF_REV);
+  
+  digitalWrite(LED_CAL, LOW);
+  
+  // wait a second before going back
+  unsigned long holdStart = millis();
+  while (millis() - holdStart < 1000) {
+    updateButton(&leftBtn);
+    updateButton(&rightBtn);
+    delay(10);
+  }
+  
+  digitalWrite(LED_CAL, HIGH);
+  flipper.setSpeed(FLIPPER_FAST);
+  flipper.step(HALF_REV);
+  
+  digitalWrite(LED_CAL, LOW);
+  
+  // reset everything for next time
+  leftBtn.holdTriggered = false;
+  rightBtn.holdTriggered = false;
+  leftBtn.pressStartTime = 0;
+  rightBtn.pressStartTime = 0;
+  leftBtn.justPressed = false;
+  rightBtn.justPressed = false;
+  leftBtn.justReleased = false;
+  rightBtn.justReleased = false;
+  
+  Serial.println(F("L done"));
+  currentState = STATE_IDLE;
+}
+
+// ========== right sequence (flipping the other way) ==========
+void rightSequence() {
+  Serial.println(F("R: Fast out, Slow back + Spin CCW"));
+  
+  analogWrite(LED_LEFT, 0);
+  analogWrite(LED_RIGHT, 0);
+  
+  digitalWrite(LED_CAL, HIGH);
+  flipper.setSpeed(FLIPPER_FAST);
+  flipper.step(-HALF_REV);
+  
+  spinner.setSpeed(SPINNER_SPEED);
+  spinner.step(-STEPS_PER_REV);
+  
+  flipper.setSpeed(FLIPPER_SLOW);
+  flipper.step(HALF_REV);
+  
+  digitalWrite(LED_CAL, LOW);
+  
+  // FIX: add a small window to update buttons and catch releases
+  // this is the key difference from the original - matches left sequence behavior
+  unsigned long updateStart = millis();
+  while (millis() - updateStart < 150) {  // 150ms window to process button releases
+    updateButton(&leftBtn);
+    updateButton(&rightBtn);
+    delay(10);
+  }
+  
+  // reset flags so it doesn't loop
+  leftBtn.holdTriggered = false;
+  rightBtn.holdTriggered = false;
+  leftBtn.pressStartTime = 0;
+  rightBtn.pressStartTime = 0;
+  leftBtn.justPressed = false;
+  rightBtn.justPressed = false;
+  leftBtn.justReleased = false;
+  rightBtn.justReleased = false;
+  
+  Serial.println(F("R done"));
+  currentState = STATE_IDLE;
 }
