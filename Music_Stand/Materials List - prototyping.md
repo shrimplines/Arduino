@@ -17,9 +17,9 @@ the stage where you use a lot of cardboard... feel free to make substitutions fo
 ## ✧ mechanical (cardboard supremacy)
 
 * **spinner**:
-* a stack of cardboard circles glued together for thickness.
-* another wrapping of cardboard for the rim.
-* cut a hole so the motor axle can pass through
+*   a stack of cardboard circles glued together for thickness.
+*   another wrapping of cardboard for the rim.
+*   cut a hole so the motor axle can pass through
 * **rubber bands**: wrapped around the edge to give it enough friction to grip the page.
 
 * **flipper**:
