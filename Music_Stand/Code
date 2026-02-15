@@ -1,32 +1,30 @@
-// ============================================
-// 2-stepper page flipper - debug tracing
-// ============================================
+// ============
+// page flipper
+// ============
 
 #include <Stepper.h>
 
-// ========== pins and stuff ==========
-// flipper motor (pins 8,9,10,11)
+// motors
 #define FLIPPER_IN1 8
 #define FLIPPER_IN2 9
 #define FLIPPER_IN3 10
 #define FLIPPER_IN4 11
 
-// spinner motor (pins 4,5,6,7)
 #define SPINNER_IN1 4
 #define SPINNER_IN2 5
 #define SPINNER_IN3 6
 #define SPINNER_IN4 7
 
-// buttons (high = pressed)
+// buttons
 #define LEFT_BUTTON 13
 #define RIGHT_BUTTON 12
 
-// led indicators
+// leds
 #define LED_CAL 3
 #define LED_LEFT A2
 #define LED_RIGHT A3
 
-// ========== motor constants ==========
+// motor constants
 #define STEPS_PER_REV 2048
 #define HALF_REV 1024
 
@@ -38,7 +36,7 @@
 Stepper flipper(STEPS_PER_REV, FLIPPER_IN1, FLIPPER_IN3, FLIPPER_IN2, FLIPPER_IN4);
 Stepper spinner(STEPS_PER_REV, SPINNER_IN1, SPINNER_IN3, SPINNER_IN2, SPINNER_IN4);
 
-// ========== the brain (state machine) ==========
+// states
 enum SystemState {
   STATE_IDLE,
   STATE_CALIBRATION,
@@ -51,7 +49,7 @@ SystemState currentState = STATE_IDLE;
 bool isCalibrated = false;
 unsigned long calibrationCompleteTime = 0;
 
-// ========== button debouncing logic ==========
+// button logic
 struct Button {
   int pin;
   bool lastState;
@@ -69,14 +67,11 @@ Button rightBtn = {RIGHT_BUTTON, LOW, LOW, false, false, false, 0, false, 0};
 #define DEBOUNCE_DELAY 50
 #define HOLD_TIME 500
 #define CALIBRATION_HOLD_TIME 1000
-#define POST_CALIBRATION_COOLDOWN 1500
+#define POST_CALIBRATION_COOLDOWN 1000
 
-// ========== setup (getting ready) ==========
 void setup() {
   Serial.begin(9600);
-  Serial.println(F("=== Page Flipper Debug ==="));
-  Serial.println(F("Hold both 1s: Calibrate"));
-  Serial.println(F("Then hold left/right 0.5s: Flip"));
+  Serial.println(F("flipping time"));
   
   flipper.setSpeed(FLIPPER_SLOW);
   spinner.setSpeed(SPINNER_SPEED);
@@ -92,7 +87,6 @@ void setup() {
   rightBtn.lastState = digitalRead(rightBtn.pin);
 }
 
-// ========== main loop (checking stuff constantly) ==========
 void loop() {
   updateButton(&leftBtn);
   updateButton(&rightBtn);
@@ -115,11 +109,9 @@ void loop() {
       break;
   }
   
-  // light up leds when pressed
   digitalWrite(LED_LEFT, leftBtn.pressed ? HIGH : LOW);
   digitalWrite(LED_RIGHT, rightBtn.pressed ? HIGH : LOW);
   
-  // clear the "just" flags so they dont stick
   leftBtn.justPressed = false;
   leftBtn.justReleased = false;
   rightBtn.justPressed = false;
@@ -128,7 +120,6 @@ void loop() {
   delay(5);
 }
 
-// ========== button debounce (handling click jitter) ==========
 void updateButton(Button *btn) {
   bool reading = digitalRead(btn->pin);
   unsigned long now = millis();
@@ -146,66 +137,40 @@ void updateButton(Button *btn) {
         btn->pressed = true;
         btn->pressStartTime = now;
         btn->holdTriggered = false;
-        Serial.print(F("Btn"));
-        Serial.print(btn->pin);
-        Serial.println(F(" DOWN"));
       } else {
         btn->justReleased = true;
         btn->pressed = false;
-        Serial.print(F("Btn"));
-        Serial.print(btn->pin);
-        Serial.println(F(" UP"));
       }
     }
   }
-  
   btn->lastState = reading;
 }
 
-// ========== idle state (just chilling) ==========
 void idleState() {
   digitalWrite(LED_CAL, LOW);
-  
   unsigned long now = millis();
   
-  // occasionally shout out the status
-  static unsigned long lastStatus = 0;
-  if (now - lastStatus > 3000) {
-    lastStatus = now;
-    Serial.print(F("Status: Cal="));
-    Serial.print(isCalibrated);
-    Serial.print(F(" L="));
-    Serial.print(leftBtn.pressed);
-    Serial.print(F(" R="));
-    Serial.print(rightBtn.pressed);
-    Serial.print(F(" State="));
-    Serial.println(currentState);
-  }
-  
-  // check for calibration first (hold both buttons)
   if (leftBtn.pressed && rightBtn.pressed) {
     unsigned long holdDuration = now - min(leftBtn.pressStartTime, rightBtn.pressStartTime);
     int progress = map(holdDuration, 0, CALIBRATION_HOLD_TIME, 0, 255);
     analogWrite(LED_CAL, constrain(progress, 0, 255));
     
     if (holdDuration >= CALIBRATION_HOLD_TIME) {
-      Serial.println(F(">>> CAL <<<"));
+      Serial.println(F("calibrating..."));
       analogWrite(LED_CAL, 0);
       currentState = STATE_CALIBRATION;
     }
     return;
   }
   
-  // check for flip triggers only if it's calibrated
   if (isCalibrated) {
-    // left button hold logic
     if (leftBtn.pressed && !rightBtn.pressed) {
       unsigned long holdDuration = now - leftBtn.pressStartTime;
       int progress = map(holdDuration, 0, HOLD_TIME, 0, 255);
       analogWrite(LED_LEFT, constrain(progress, 0, 255));
       
       if (holdDuration >= HOLD_TIME && !leftBtn.holdTriggered) {
-        Serial.println(F(">>> LEFT <<<"));
+        Serial.println(F("left flip"));
         leftBtn.holdTriggered = true;
         analogWrite(LED_LEFT, 0);
         currentState = STATE_LEFT_SEQ;
@@ -214,14 +179,13 @@ void idleState() {
       analogWrite(LED_LEFT, leftBtn.pressed ? 255 : 0);
     }
     
-    // right button hold logic
     if (rightBtn.pressed && !leftBtn.pressed) {
       unsigned long holdDuration = now - rightBtn.pressStartTime;
       int progress = map(holdDuration, 0, HOLD_TIME, 0, 255);
       analogWrite(LED_RIGHT, constrain(progress, 0, 255));
       
       if (holdDuration >= HOLD_TIME && !rightBtn.holdTriggered) {
-        Serial.println(F(">>> RIGHT <<<"));
+        Serial.println(F("right flip"));
         rightBtn.holdTriggered = true;
         analogWrite(LED_RIGHT, 0);
         currentState = STATE_RIGHT_SEQ;
@@ -232,30 +196,21 @@ void idleState() {
   }
 }
 
-// ========== post-calibration cooldown (taking a breath) ==========
 void postCalibrationCooldown() {
   unsigned long now = millis();
+  if ((now / 500) % 2 == 0) digitalWrite(LED_CAL, HIGH);
+  else digitalWrite(LED_CAL, LOW);
   
-  // blink led to show we are in cooldown
-  if ((now / 500) % 2 == 0) {
-    digitalWrite(LED_CAL, HIGH);
-  } else {
-    digitalWrite(LED_CAL, LOW);
-  }
-  
-  // still let it recalibrate if needed
   if (leftBtn.pressed && rightBtn.pressed) {
     unsigned long holdDuration = now - min(leftBtn.pressStartTime, rightBtn.pressStartTime);
     if (holdDuration >= CALIBRATION_HOLD_TIME) {
-      Serial.println(F(">>> RECAL <<<"));
       currentState = STATE_CALIBRATION;
       return;
     }
   }
   
-  // check if cooldown is over
   if (now - calibrationCompleteTime >= POST_CALIBRATION_COOLDOWN) {
-    Serial.println(F(">>> READY <<<"));
+    Serial.println(F("ready"));
     digitalWrite(LED_CAL, LOW);
     
     leftBtn.pressStartTime = 0;
@@ -267,25 +222,16 @@ void postCalibrationCooldown() {
   }
 }
 
-// ========== calibration (finding the start) ==========
 void calibrationState() {
   static int stepsTaken = 0;
-  
   digitalWrite(LED_CAL, HIGH);
   flipper.setSpeed(FLIPPER_SLOW);
-  
-  if (stepsTaken == 0) {
-    Serial.println(F("Cal move..."));
-    stepsTaken = 0;
-  }
   
   while (stepsTaken < STEPS_PER_REV * 2) {
     updateButton(&leftBtn);
     updateButton(&rightBtn);
-    
-    // tap a button to set the zero point
     if (leftBtn.justPressed || rightBtn.justPressed) {
-      Serial.println(F(">>> ZERO <<<"));
+      Serial.println(F("zeroed"));
       flipper.step(0);
       isCalibrated = true;
       calibrationCompleteTime = millis();
@@ -301,27 +247,17 @@ void calibrationState() {
       currentState = STATE_POST_CALIBRATION_COOLDOWN;
       return;
     }
-    
     flipper.step(1);
     stepsTaken++;
     delay(2);
-    
-    // flash cal led while moving
-    if (stepsTaken % 200 == 0) {
-      digitalWrite(LED_CAL, !digitalRead(LED_CAL));
-    }
   }
-  
-  Serial.println(F(">>> TIMEOUT <<<"));
   stepsTaken = 0;
   digitalWrite(LED_CAL, LOW);
   currentState = STATE_IDLE;
 }
 
-// ========== left sequence (flipping it) ==========
 void leftSequence() {
-  Serial.println(F("L: Spin CW + Slow out, Fast back"));
-  
+  Serial.println(F("l: phase 1"));
   analogWrite(LED_LEFT, 0);
   analogWrite(LED_RIGHT, 0);
   
@@ -329,26 +265,31 @@ void leftSequence() {
   spinner.setSpeed(SPINNER_SPEED);
   spinner.step(STEPS_PER_REV);
   
-  flipper.setSpeed(FLIPPER_SLOW);
-  flipper.step(-HALF_REV);
+  Serial.println(F("l: phase 2"));
+  int flipperSteps = HALF_REV;
+  for (int i = 0; i < flipperSteps; i++) {
+    flipper.step(-1); 
+    spinner.step(1);  
+    spinner.step(1);
+    delay(1);
+    if (i % 50 == 0) { updateButton(&leftBtn); updateButton(&rightBtn); }
+  }
   
+  Serial.println(F("l: phase 3"));
   digitalWrite(LED_CAL, LOW);
-  
-  // wait a second before going back
   unsigned long holdStart = millis();
   while (millis() - holdStart < 1000) {
-    updateButton(&leftBtn);
-    updateButton(&rightBtn);
+    updateButton(&leftBtn); updateButton(&rightBtn);
     delay(10);
   }
   
+  Serial.println(F("l: phase 4"));
   digitalWrite(LED_CAL, HIGH);
   flipper.setSpeed(FLIPPER_FAST);
-  flipper.step(HALF_REV);
+  flipper.step(HALF_REV); 
   
   digitalWrite(LED_CAL, LOW);
   
-  // reset everything for next time
   leftBtn.holdTriggered = false;
   rightBtn.holdTriggered = false;
   leftBtn.pressStartTime = 0;
@@ -357,15 +298,13 @@ void leftSequence() {
   rightBtn.justPressed = false;
   leftBtn.justReleased = false;
   rightBtn.justReleased = false;
-  
-  Serial.println(F("L done"));
+
+  Serial.println(F("l done"));
   currentState = STATE_IDLE;
 }
 
-// ========== right sequence (flipping the other way) ==========
 void rightSequence() {
-  Serial.println(F("R: Fast out, Slow back + Spin CCW"));
-  
+  Serial.println(F("r: phase 1"));
   analogWrite(LED_LEFT, 0);
   analogWrite(LED_RIGHT, 0);
   
@@ -373,24 +312,36 @@ void rightSequence() {
   flipper.setSpeed(FLIPPER_FAST);
   flipper.step(-HALF_REV);
   
-  spinner.setSpeed(SPINNER_SPEED);
-  spinner.step(-STEPS_PER_REV);
-  
-  flipper.setSpeed(FLIPPER_SLOW);
-  flipper.step(HALF_REV);
-  
+  Serial.println(F("r: phase 2"));
   digitalWrite(LED_CAL, LOW);
-  
-  // FIX: add a small window to update buttons and catch releases
-  // this is the key difference from the original - matches left sequence behavior
-  unsigned long updateStart = millis();
-  while (millis() - updateStart < 150) {  // 150ms window to process button releases
-    updateButton(&leftBtn);
-    updateButton(&rightBtn);
+  unsigned long holdStart = millis();
+  while (millis() - holdStart < 1000) {
+    updateButton(&leftBtn); updateButton(&rightBtn);
     delay(10);
   }
   
-  // reset flags so it doesn't loop
+  Serial.println(F("r: phase 3"));
+  digitalWrite(LED_CAL, HIGH);
+  spinner.setSpeed(SPINNER_SPEED);
+  spinner.step(-STEPS_PER_REV);
+  
+  Serial.println(F("r: phase 4"));
+  int flipperSteps = HALF_REV;
+  for (int i = 0; i < flipperSteps; i++) {
+    flipper.step(1);  
+    spinner.step(-1); 
+    spinner.step(-1);
+    delay(1);
+    if (i % 50 == 0) { updateButton(&leftBtn); updateButton(&rightBtn); }
+  }
+  
+  digitalWrite(LED_CAL, LOW);
+  unsigned long updateStart = millis();
+  while (millis() - updateStart < 150) {
+    updateButton(&leftBtn); updateButton(&rightBtn);
+    delay(10);
+  }
+  
   leftBtn.holdTriggered = false;
   rightBtn.holdTriggered = false;
   leftBtn.pressStartTime = 0;
@@ -399,7 +350,7 @@ void rightSequence() {
   rightBtn.justPressed = false;
   leftBtn.justReleased = false;
   rightBtn.justReleased = false;
-  
-  Serial.println(F("R done"));
+
+  Serial.println(F("r done"));
   currentState = STATE_IDLE;
 }
