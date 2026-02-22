@@ -2,7 +2,7 @@
 
 ### a slightly chunky (but also easier to repair) version of the final ‧₊˚✧
 
-the stage where you use a lot of cardboard... feel free to make substitutions for materials, this is just what I used. 
+the stage where you use a lot of cardboard... 
 
 ## ✧ electronics
 
