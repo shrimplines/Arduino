@@ -1,91 +1,109 @@
-// ============
-// eye controller
-// ============
+// =======
+// eyeball
+// =======
 
 #include <Servo.h>
 
 // pins
-#define SPIN_BTN 5
-#define BLINK_BTN 3
-#define SPIN_SRV 10
-#define BLINK_SRV 11
+const int SPIN_BUTTON = 5;
+const int BLINK_BUTTON = 3;
+const int SPIN_SERVO_PIN = 10;
+const int BLINK_SERVO_PIN = 11;
 
-Servo spin;
-Servo blink;
+// objects
+Servo spinServo;
+Servo blinkServo;
 
-// states
-bool spinActive = false;
-bool blinkActive = false;
-int lastSpin = HIGH;
-int lastBlink = HIGH;
+// state
+int lastSpinState = HIGH;
+int lastBlinkState = HIGH;
+bool spinSequenceActive = false;
+bool blinkSequenceActive = false;
 
 void setup() {
   Serial.begin(9600);
-  Serial.println(f("eye ready"));
-
-  spin.attach(SPIN_SRV);
-  blink.attach(BLINK_SRV);
   
-  spin.write(0);
-  blink.write(0);
+  spinServo.attach(SPIN_SERVO_PIN);
+  blinkServo.attach(BLINK_SERVO_PIN);
   
-  pinMode(SPIN_BTN, INPUT_PULLUP);
-  pinMode(BLINK_BTN, INPUT_PULLUP);
+  spinServo.write(0);
+  blinkServo.write(0);
+  
+  pinMode(SPIN_BUTTON, INPUT_PULLUP);
+  pinMode(BLINK_BUTTON, INPUT_PULLUP);
+  
+  Serial.println("Ready! Press button 5 for Spin, button 3 for Blink");
+  Serial.println("Spin servo on pin 6 | Blink servo on pin 11");
 }
 
 void loop() {
-  int curSpin = digitalRead(SPIN_BTN);
-  int curBlink = digitalRead(BLINK_BTN);
-
-  // trigger logic
-  if (lastSpin == HIGH && curSpin == LOW && !spinActive && !blinkActive) {
-    spinActive = true;
+  // spin check
+  int currentSpinState = digitalRead(SPIN_BUTTON);
+  
+  if (lastSpinState == HIGH && currentSpinState == LOW && !spinSequenceActive && !blinkSequenceActive) {
+    spinSequenceActive = true;
+    Serial.println("Starting Spin Sequence");
   }
-  if (lastBlink == HIGH && curBlink == LOW && !blinkActive && !spinActive) {
-    blinkActive = true;
+  lastSpinState = currentSpinState;
+  
+  // blink check
+  int currentBlinkState = digitalRead(BLINK_BUTTON);
+  
+  if (lastBlinkState == HIGH && currentBlinkState == LOW && !blinkSequenceActive && !spinSequenceActive) {
+    blinkSequenceActive = true;
+    Serial.println("Starting Blink Sequence");
   }
-
-  lastSpin = curSpin;
-  lastBlink = curBlink;
-
-  // run sequences
-  if (spinActive) {
-    Serial.println(f("spinning..."));
-    move(spin, 30, 2000);   // left
-    delay(750);
-    move(spin, -30, 4000);  // right
-    delay(750);
-    move(spin, 0, 2000);    // center
-    spinActive = false;
+  lastBlinkState = currentBlinkState;
+  
+  // run
+  if (spinSequenceActive) {
+    runSpinSequence();
+    spinSequenceActive = false;
+    Serial.println("Spin Sequence Complete");
   }
-
-  if (blinkActive) {
-    Serial.println(f("blinking..."));
-    move(blink, 100, 2000); // close
-    delay(750);
-    move(blink, 0, 2000);   // open
-    blinkActive = false;
+  
+  if (blinkSequenceActive) {
+    runBlinkSequence();
+    blinkSequenceActive = false;
+    Serial.println("Blink Sequence Complete");
   }
 }
 
-// smooth motion helper
-void move(Servo &srv, int target, int ms) {
-  int start = srv.read();
-  int diff = target - start;
-  
-  if (diff == 0) return;
-  
-  int wait = max(15, ms / abs(diff));
+// spin seq
+void runSpinSequence() {
+  smoothMove(spinServo, 30, 2000);
+  delay(750);
+  smoothMove(spinServo, -30, 4000);
+  delay(750);
+  smoothMove(spinServo, 0, 2000);
+}
 
-  if (diff > 0) {
-    for (int a = start; a <= target; a++) {
-      srv.write(a);
-      delay(wait);
+// blink seq
+void runBlinkSequence() {
+  smoothMove(blinkServo, 100, 2000);
+  delay(750);
+  smoothMove(blinkServo, 0, 2000);
+}
+
+// move helper
+void smoothMove(Servo &servo, int targetAngle, int durationMs) {
+  int startAngle = servo.read();
+  int degreesToMove = targetAngle - startAngle;
+  
+  if (degreesToMove == 0) return;
+  
+  int delayPerDegree = durationMs / abs(degreesToMove);
+  if (delayPerDegree < 15) delayPerDegree = 15;
+  
+  if (degreesToMove > 0) {
+    for (int angle = startAngle; angle <= targetAngle; angle++) {
+      servo.write(angle);
+      delay(delayPerDegree);
     }
   } else {
-    for (int a = start; a >= target; a--) {
-      srv.write(a);
-      delay(wait);
+    for (int angle = startAngle; angle >= targetAngle; angle--) {
+      servo.write(angle);
+      delay(delayPerDegree);
     }
   }
 }
