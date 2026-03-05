@@ -1,0 +1,91 @@
+// ============
+// eye controller
+// ============
+
+#include <Servo.h>
+
+// pins
+#define SPIN_BTN 5
+#define BLINK_BTN 3
+#define SPIN_SRV 10
+#define BLINK_SRV 11
+
+Servo spin;
+Servo blink;
+
+// states
+bool spinActive = false;
+bool blinkActive = false;
+int lastSpin = HIGH;
+int lastBlink = HIGH;
+
+void setup() {
+  Serial.begin(9600);
+  Serial.println(f("eye ready"));
+
+  spin.attach(SPIN_SRV);
+  blink.attach(BLINK_SRV);
+  
+  spin.write(0);
+  blink.write(0);
+  
+  pinMode(SPIN_BTN, INPUT_PULLUP);
+  pinMode(BLINK_BTN, INPUT_PULLUP);
+}
+
+void loop() {
+  int curSpin = digitalRead(SPIN_BTN);
+  int curBlink = digitalRead(BLINK_BTN);
+
+  // trigger logic
+  if (lastSpin == HIGH && curSpin == LOW && !spinActive && !blinkActive) {
+    spinActive = true;
+  }
+  if (lastBlink == HIGH && curBlink == LOW && !blinkActive && !spinActive) {
+    blinkActive = true;
+  }
+
+  lastSpin = curSpin;
+  lastBlink = curBlink;
+
+  // run sequences
+  if (spinActive) {
+    Serial.println(f("spinning..."));
+    move(spin, 30, 2000);   // left
+    delay(750);
+    move(spin, -30, 4000);  // right
+    delay(750);
+    move(spin, 0, 2000);    // center
+    spinActive = false;
+  }
+
+  if (blinkActive) {
+    Serial.println(f("blinking..."));
+    move(blink, 100, 2000); // close
+    delay(750);
+    move(blink, 0, 2000);   // open
+    blinkActive = false;
+  }
+}
+
+// smooth motion helper
+void move(Servo &srv, int target, int ms) {
+  int start = srv.read();
+  int diff = target - start;
+  
+  if (diff == 0) return;
+  
+  int wait = max(15, ms / abs(diff));
+
+  if (diff > 0) {
+    for (int a = start; a <= target; a++) {
+      srv.write(a);
+      delay(wait);
+    }
+  } else {
+    for (int a = start; a >= target; a--) {
+      srv.write(a);
+      delay(wait);
+    }
+  }
+}
